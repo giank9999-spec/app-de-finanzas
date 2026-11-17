@@ -168,9 +168,9 @@ const MSHORT = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov
 function freshState(){
   return {
     v:1,
-    settings:{currency:'S/', quickAdd:true, lastMethod:'debito', lastCard:null},
+    settings:{currency:'S/', quickAdd:true, lastMethod:'debito', lastCard:null, lastAccount:null},
     cats: DEFAULT_CATS.map(([id,name,icon],i)=>({id,name,icon,limit:0,color:COLORS[i]})),
-    cards:[], expenses:[], cardPayments:[], plans:[], goals:[], alerts:{}
+    cards:[], accounts:[], moves:[], expenses:[], cardPayments:[], plans:[], goals:[], alerts:{}
   };
 }
 function load(){
@@ -198,6 +198,14 @@ function dayLabel(ds){ const d=new Date(ds.slice(0,10)+'T12:00'); const today=no
   return d.toLocaleDateString('es-PE',{weekday:'long',day:'numeric',month:'short'}); }
 const cat = id => S.cats.find(c=>c.id===id) || {id, name:'Sin categoría', icon:'sin-categoria', limit:0, color:'#64748b'};
 const card = id => S.cards.find(c=>c.id===id);
+const acc = id => S.accounts.find(a=>a.id===id);
+const defAcc = () => acc(S.settings.lastAccount) || S.accounts[0] || null;
+function accBalance(a){ return r2((a.initial||0) + sum(S.moves.filter(m=>m.accountId===a.id)) - sum(S.expenses.filter(e=>e.method==='debito'&&e.accountId===a.id))); }
+function checkLow(a){
+  if(!a) return; const key='acc|'+a.id, b=accBalance(a), lvl=(a.lowAlert>0 && b<a.lowAlert)?1:0, prev=S.alerts[key]||0;
+  if(lvl>prev) setTimeout(()=>notify(`${a.name}: saldo bajo`, `Te quedan ${fmt(b)}. Tu aviso es por debajo de ${fmt(a.lowAlert)}.`, b<0?'over':'warn', 'debito'), 3000);
+  S.alerts[key]=lvl;
+}
 const monthExp = m => S.expenses.filter(e=>e.date.slice(0,7)===m);
 const sum = (arr, f=x=>x.amount) => arr.reduce((a,x)=>a+(f(x)||0),0);
 function catSpent(m, cid){ return sum(monthExp(m).filter(e=>e.cat===cid)); }
@@ -249,6 +257,7 @@ function checkAlerts(exp){
     if(lvl>prev) setTimeout(()=>notify(`${k.name}: ${lvl===2?'línea agotada':'80% de la línea'}`, `Usado ${fmt(used)} de ${fmt(k.limit)}. Disponible ${fmt(Math.max(0,k.limit-used))}.`, lvl===2?'over':'warn', 'credito'), 2400);
     S.alerts[key]=lvl; // la línea se libera al pagar, así que se reinicia
   }
+  if(exp.method==='debito') checkLow(acc(exp.accountId));
   save();
 }
 async function enableNotifications(){
@@ -270,8 +279,8 @@ window.addEventListener('hashchange', render);
 function render(){
   const h = (location.hash||'#inicio').slice(1).split('?')[0];
   const [route, arg] = h.split('/');
-  document.querySelectorAll('#tabs a').forEach(a=>a.classList.toggle('on', a.dataset.tab===route || (route==='editar'&&a.dataset.tab==='nuevo') || (['tarjetas','cuotas','metas','ajustes'].includes(route)&&a.dataset.tab==='mas')));
-  const R = {inicio:vInicio, gastos:vGastos, nuevo:vNuevo, editar:vNuevo, presupuesto:vPresupuesto, mas:vMas, tarjetas:vTarjetas, cuotas:vCuotas, metas:vMetas, ajustes:vAjustes}[route] || vInicio;
+  document.querySelectorAll('#tabs a').forEach(a=>a.classList.toggle('on', a.dataset.tab===route || (route==='editar'&&a.dataset.tab==='nuevo') || (['tarjetas','debito','cuotas','metas','ajustes'].includes(route)&&a.dataset.tab==='mas')));
+  const R = {inicio:vInicio, gastos:vGastos, nuevo:vNuevo, editar:vNuevo, presupuesto:vPresupuesto, mas:vMas, tarjetas:vTarjetas, debito:vDebito, cuotas:vCuotas, metas:vMetas, ajustes:vAjustes}[route] || vInicio;
   $('#app').innerHTML = R(arg);
   window.scrollTo(0,0);
   if(R===vNuevo) setupForm(arg);
@@ -315,6 +324,7 @@ function dashMes(){
   h += `<div class="card"><div class="stat"><div class="lbl">Gastado en ${MONTHS[mo-1]}</div><div class="big">${fmt(total)}</div></div>
     ${lim>0?`<div style="margin:10px 0 6px">${progress(pct(total,lim))}</div><div class="row between small"><span class="muted">Presupuesto ${fmt0(lim)}</span><b class="${total>lim?'':'muted'}" style="${total>lim?'color:var(--danger)':''}">${total>lim?'Excedido '+fmt0(total-lim):'Quedan '+fmt0(lim-total)}</b></div>`:`<p class="small muted" style="margin:8px 0 0">Define límites en <a href="#presupuesto">Presupuesto</a> para ver cuánto te queda.</p>`}
     <div class="row between small" style="margin-top:10px"><span class="muted">${ex.length} gasto${ex.length===1?'':'s'}</span><span class="muted">Promedio diario ${fmt0(total/Math.max(1,dayN))}</span></div></div>`;
+  if(S.accounts.length) h += `<div class="card"><div class="row between"><h2>Saldo en débito</h2><a href="#debito" class="small" style="color:var(--accent);text-decoration:none;font-weight:600">Ver ›</a></div>${S.accounts.map(accMini).join('')}</div>`;
   if(over.length) h += `<div class="card">${over.map(c=>{const s=catSpent(m,c.id);return `<div class="row between small" style="padding:3px 0"><span>${ico(c.icon,'in')}${esc(c.name)}</span><span class="pill ${levelOf(s/c.limit)}">${Math.round(s/c.limit*100)}% del límite</span></div>`}).join('')}</div>`;
   if(total>0){
     h += `<div class="card"><h2>Por categoría</h2><div class="donut-wrap">${donut(catItems,total)}${legend(catItems,total)}</div></div>`;
@@ -327,6 +337,7 @@ function dashMes(){
   if(S.goals.length) h += `<div class="card"><div class="row between"><h2>Metas</h2><a href="#metas" class="small" style="color:var(--accent);text-decoration:none;font-weight:600">Ver ›</a></div>${S.goals.slice(0,3).map(g=>`<div style="margin:8px 0"><div class="row between small"><span>${ico(g.icon,'in')}${esc(g.name)}</span><b>${Math.round(pct(g.saved,g.target)*100)}%</b></div><div class="bar" style="margin-top:4px"><i style="width:${Math.min(100,pct(g.saved,g.target)*100)}%"></i></div></div>`).join('')}</div>`;
   return h;
 }
+function accMini(a){ const b=accBalance(a), low=a.lowAlert>0&&b<a.lowAlert; return `<div class="row between small" style="padding:6px 0"><span>${ico('debito','in')}${esc(a.name)}${low?' <span class="pill '+(b<0?'over':'warn')+'">Saldo bajo</span>':''}</span><b style="${b<0?'color:var(--danger)':''}">${fmt(b)}</b></div>`; }
 function cardMini(c){ const u=cardUsed(c), p=pct(u,c.limit); return `<div style="margin:8px 0"><div class="row between small"><span>${ico('credito','in')}${esc(c.name)}</span><span><b>${fmt0(u)}</b> <span class="muted">/ ${fmt0(c.limit)}</span></span></div><div style="margin-top:4px">${progress(p)}</div></div>`; }
 function dashAnio(){
   const y=view.year, ex=S.expenses.filter(e=>e.date.startsWith(y+'-')), total=sum(ex);
@@ -387,6 +398,7 @@ function vNuevo(id){
       </div>
       ${S.cards.length?'':`<p class="note">Aún no registras tarjetas. <a href="#tarjetas">Agrega tu tarjeta</a> para seguir su línea de crédito.</p>`}
     </div>
+    <div id="debitBox" style="display:none"><label class="f">Tarjeta de débito</label><select class="in" id="accSel">${S.accounts.map(a=>`<option value="${a.id}">${esc(a.name)} · saldo ${fmt(accBalance(a))}</option>`).join('')}</select></div>
     <label class="f">¿Dónde?</label>
     <input class="in" id="place" list="placesList" placeholder="Ej. Wong, Uber, farmacia…" value="${esc(e?.place||'')}" autocapitalize="sentences">
     <datalist id="placesList">${places.map(p=>`<option value="${esc(p)}">`).join('')}</datalist>
@@ -402,10 +414,11 @@ function vNuevo(id){
 function setupForm(id){
   const e = id ? S.expenses.find(x=>x.id===id) : null;
   let selCat = e?.cat || null, selMeth = e?.method || S.settings.lastMethod || 'debito';
-  const setM = m => { selMeth=m; document.querySelectorAll('#meth button').forEach(b=>b.classList.toggle('on', b.dataset.m===m)); $('#creditBox').style.display = m==='credito'?'block':'none'; $('#cardSelWrap').style.display = S.cards.length?'block':'none'; };
+  const setM = m => { selMeth=m; document.querySelectorAll('#meth button').forEach(b=>b.classList.toggle('on', b.dataset.m===m)); $('#creditBox').style.display = m==='credito'?'block':'none'; $('#cardSelWrap').style.display = S.cards.length?'block':'none'; $('#debitBox').style.display = m==='debito' && S.accounts.length>1?'block':'none'; };
   setM(selMeth);
   if(e?.cardId) $('#cardSel').value=e.cardId; else if(S.settings.lastCard && card(S.settings.lastCard)) $('#cardSel').value=S.settings.lastCard;
   if(e?.cuotas) $('#cuotas').value=e.cuotas;
+  if(S.accounts.length){ const a0 = (e?.accountId && acc(e.accountId)) || defAcc(); if(a0) $('#accSel').value=a0.id; }
   if(e?.planId) $('#cuotas').disabled = true;
   document.querySelectorAll('#meth button').forEach(b=>b.onclick=()=>setM(b.dataset.m));
   document.querySelectorAll('.cat-btn').forEach(b=>b.onclick=()=>{ selCat=b.dataset.cat; document.querySelectorAll('.cat-btn').forEach(x=>x.classList.toggle('on',x===b)); });
@@ -417,7 +430,9 @@ function setupForm(id){
     if(!selCat){ toast('Elige una categoría','warn'); return; }
     const cardId = selMeth==='credito' && S.cards.length ? $('#cardSel').value : null;
     const cuotas = selMeth==='credito' ? Number($('#cuotas').value) : 1;
-    const data = {amount, cat:selCat, method:selMeth, cardId, cuotas, place:$('#place').value.trim(), note:$('#note').value.trim(), date:$('#date').value || nowLocal()};
+    const keepOld = e && e.method==='debito' && !e.accountId && selMeth==='debito'; // gastos anteriores a registrar la tarjeta no tocan el saldo
+    const accountId = selMeth==='debito' && S.accounts.length && !keepOld ? (S.accounts.length>1 ? $('#accSel').value : S.accounts[0].id) : null;
+    const data = {amount, cat:selCat, method:selMeth, cardId, accountId, cuotas, place:$('#place').value.trim(), note:$('#note').value.trim(), date:$('#date').value || nowLocal()};
     let exp;
     if(e){ Object.assign(e, data); exp=e;
       const plan = e.planId && S.plans.find(p=>p.id===e.planId);
@@ -430,7 +445,7 @@ function setupForm(id){
       }
       S.expenses.push(exp);
     }
-    S.settings.lastMethod = selMeth; if(cardId) S.settings.lastCard = cardId;
+    S.settings.lastMethod = selMeth; if(cardId) S.settings.lastCard = cardId; if(accountId) S.settings.lastAccount = accountId;
     save();
     toast(e?'Cambios guardados':`Guardado: ${fmt(amount)} en ${cat(selCat).name}`, '', 'check');
     checkAlerts(exp);
@@ -454,6 +469,7 @@ function vMas(){
   const notifOn = 'Notification' in window && Notification.permission==='granted';
   return `<h1>Más</h1><div class="card menu" style="padding:2px 14px">
     <a href="#tarjetas"><span class="emo">${ico('credito')}</span><span><b>Tarjetas de crédito</b><br><span class="tiny muted">Consumo vs. línea, pagos</span></span></a>
+    <a href="#debito"><span class="emo">${ico('debito')}</span><span><b>Tarjetas de débito</b><br><span class="tiny muted">Saldo, ingresos y movimientos</span></span></a>
     <a href="#cuotas"><span class="emo">${ico('cuotas')}</span><span><b>Cuotas y préstamos</b><br><span class="tiny muted">Lo que te falta pagar</span></span></a>
     <a href="#metas"><span class="emo">${ico('metas')}</span><span><b>Metas de ahorro</b><br><span class="tiny muted">Ahorro y metas para cosas</span></span></a>
     <a href="#ajustes"><span class="emo">${ico('ajustes')}</span><span><b>Ajustes y respaldo</b><br><span class="tiny muted">Moneda, categorías, notificaciones${notifOn?' '+ico('check','sm'):''}</span></span></a>
@@ -479,6 +495,26 @@ function vTarjetas(){
   });
   h += `<button class="btn block ghost" data-a="addcard">+ Agregar tarjeta</button>
   <p class="note">El "usado" suma tus compras con crédito (incluidas las en cuotas, que bloquean la línea completa) menos los pagos que registres aquí. Al pagar se libera tu línea.</p>`;
+  return h;
+}
+
+function vDebito(){
+  let h = back()+`<h1>Tarjetas de débito</h1>`;
+  if(!S.accounts.length) h += `<div class="card empty">Registra tu tarjeta de débito con su saldo actual. Tus gastos con débito lo irán descontando y tus ingresos lo sumarán.</div>`;
+  S.accounts.forEach(a=>{ const b=accBalance(a), low=a.lowAlert>0&&b<a.lowAlert;
+    const mv = [
+      ...S.moves.filter(m=>m.accountId===a.id).map(m=>({d:m.date, t:m.note||(m.amount>0?'Ingreso':'Salida'), s:m.kind==='ingreso'?'Ingreso':m.kind==='pago-tarjeta'?'Pago de tarjeta':'Pago de cuota', v:m.amount, i:m.kind==='ingreso'?'efectivo':m.kind==='pago-tarjeta'?'credito':'cuotas', id:m.kind==='ingreso'?m.id:''})),
+      ...S.expenses.filter(e=>e.method==='debito'&&e.accountId===a.id).map(e=>({d:e.date, t:e.place||cat(e.cat).name, s:e.place?cat(e.cat).name:'Gasto con débito', v:-e.amount, i:cat(e.cat).icon}))
+    ].sort((x,y)=>y.d.localeCompare(x.d)).slice(0,8);
+    h += `<div class="card"><div class="row between"><h2 style="margin:0;display:flex;align-items:center;gap:8px">${ico('debito')}${esc(a.name)}</h2><button class="btn ghost sm" data-a="editacc" data-v="${a.id}">Editar</button></div>
+      <div class="stat" style="margin-top:12px"><div class="lbl">Saldo disponible</div><div class="big" style="${b<0?'color:var(--danger)':''}">${fmt(b)}</div></div>
+      ${low?`<div style="margin-top:6px"><span class="pill ${b<0?'over':'warn'}">Saldo bajo</span> <span class="tiny muted">Tu aviso es por debajo de ${fmt0(a.lowAlert)}</span></div>`:a.lowAlert>0?`<div class="tiny muted" style="margin-top:4px">Te aviso si baja de ${fmt0(a.lowAlert)}</div>`:''}
+      <div style="height:12px"></div><button class="btn block" data-a="addincome" data-v="${a.id}">+ Registrar ingreso</button>
+      ${mv.length?`<div class="list" style="margin-top:8px">${mv.map(m=>`<div class="item" ${m.id?`data-a="editincome" data-v="${m.id}"`:''}><div class="emo">${ico(m.i)}</div><div class="grow"><div class="ellipsis"><b>${esc(m.t)}</b></div><div class="tiny muted">${esc(m.s)} · ${dayLabel(m.d.length>10?m.d:m.d+'T12:00')}</div></div><b style="${m.v>0?'color:var(--ok)':''}">${m.v>0?'+':'−'}${fmt(Math.abs(m.v))}</b></div>`).join('')}</div>`:'<p class="tiny muted" style="margin-bottom:0">Aún no hay movimientos.</p>'}
+    </div>`;
+  });
+  h += `<button class="btn block ghost" data-a="addacc">+ Agregar tarjeta de débito</button>
+  <p class="note">El saldo parte del monto que registraste, suma tus ingresos y resta los gastos que pagas con débito, los pagos a tu tarjeta de crédito y las cuotas que pagues desde aquí. Los gastos con débito anteriores a registrar la tarjeta no lo afectan.</p>`;
   return h;
 }
 
@@ -586,11 +622,16 @@ const actions = {
       (bg,close)=>{ bg.querySelector('form').onsubmit=ev=>{ ev.preventDefault(); const d=Object.fromEntries(new FormData(ev.target)); S.cats.forEach(c=>{ const nl=r2(num(d[c.id])); if(nl!==c.limit){ c.limit=nl; Object.keys(S.alerts).forEach(k=>{ if(k.endsWith('|cat|'+c.id)) delete S.alerts[k]; }); } }); save(); close(); render(); toast('Límites guardados'); }; });
   },
   addcard(){ cardForm(); }, editcard(id){ cardForm(card(id)); },
+  addacc(){ accForm(); }, editacc(id){ accForm(acc(id)); },
+  addincome(id){ incomeForm(id); }, editincome(id){ const m=S.moves.find(x=>x.id===id); if(m) incomeForm(m.accountId, m); },
   paycard(id){ const c=card(id), u=cardUsed(c);
     formSheet(`Pago a ${esc(c.name)}`, [
       {name:'amount', label:'Monto pagado', type:'number', value:u>0?u.toFixed(2):'', req:true, help:`Deuda actual: ${fmt(u)}`},
+      ...(S.accounts.length?[{name:'from', label:'Pagado desde', type:'select', value:defAcc()?.id||'', options:[...S.accounts.map(x=>[x.id,`${x.name} (saldo ${fmt(accBalance(x))})`]),['','Otra cuenta (no descontar)']]}]:[]),
       {name:'date', label:'Fecha', type:'date', value:nowLocal().slice(0,10)}
-    ], d=>{ const a=r2(num(d.amount)); if(a<=0){toast('Monto inválido','warn');return false;} S.cardPayments.push({id:uid(), cardId:id, amount:a, date:d.date||nowLocal().slice(0,10)}); S.alerts['card|'+id]=0; toast('Pago registrado. Línea liberada: '+fmt(a)); });
+    ], d=>{ const a=r2(num(d.amount)); if(a<=0){toast('Monto inválido','warn');return false;} const pid=uid(), dt=d.date||nowLocal().slice(0,10); S.cardPayments.push({id:pid, cardId:id, amount:a, date:dt, accountId:d.from||null}); S.alerts['card|'+id]=0;
+      if(d.from && acc(d.from)){ S.moves.push({id:uid(), kind:'pago-tarjeta', accountId:d.from, amount:-a, note:`Pago a ${c.name}`, date:dt, cardPaymentId:pid}); checkLow(acc(d.from)); }
+      toast('Pago registrado. Línea liberada: '+fmt(a),'', 'check'); });
   },
   addplan(){ planForm(); }, editplan(id){ planForm(S.plans.find(p=>p.id===id)); },
   paycuota(id){ const p=S.plans.find(x=>x.id===id);
@@ -600,7 +641,9 @@ const actions = {
         {name:'method', label:'Pagado con', type:'select', value:'debito', options:Object.entries(METHODS).filter(([k])=>k!=='credito').map(([k,v])=>[k,v.n])},
         {name:'reg', label:'¿Registrar como gasto del mes?', type:'select', value:'si', options:[['si','Sí, en la categoría Pagos'],['no','No']]}
       ], d=>{ const a=r2(num(d.amount)); p.paid++; p.payments=(p.payments||[]); p.payments.push({date:nowLocal(), amount:a});
-        if(d.reg==='si'){ const exp={id:uid(), created:Date.now(), amount:a, cat:S.cats.find(c=>c.id==='pagos')?'pagos':S.cats[0].id, method:d.method, cardId:null, cuotas:1, place:p.name, note:`Cuota ${p.paid}/${p.n}`, date:nowLocal()}; S.expenses.push(exp); save(); checkAlerts(exp); }
+        const fa = d.method==='debito' ? defAcc() : null;
+        if(d.reg!=='si' && fa){ S.moves.push({id:uid(), kind:'pago-cuota', accountId:fa.id, amount:-a, note:`${p.name} · cuota ${p.paid}/${p.n}`, date:nowLocal().slice(0,10)}); checkLow(fa); }
+        if(d.reg==='si'){ const exp={id:uid(), created:Date.now(), amount:a, cat:S.cats.find(c=>c.id==='pagos')?'pagos':S.cats[0].id, method:d.method, cardId:null, accountId:fa?fa.id:null, cuotas:1, place:p.name, note:`Cuota ${p.paid}/${p.n}`, date:nowLocal()}; S.expenses.push(exp); save(); checkAlerts(exp); }
         toast(p.paid>=p.n?'¡Préstamo pagado por completo!':`Cuota ${p.paid}/${p.n} registrada`, '', 'check'); });
     } else { p.paid++; (p.payments ||= []).push({date:nowLocal(), amount:p.cuota}); save(); render(); toast(p.paid>=p.n?'¡Compra pagada por completo!':`Cuota ${p.paid}/${p.n} marcada`, '', 'check'); }
   },
@@ -629,6 +672,29 @@ function cardForm(c){
   ], d=>{ const o={name:d.name.trim(), limit:r2(num(d.limit)), initialDebt:r2(num(d.initialDebt)), closingDay:Math.min(31,Math.max(1,Math.round(num(d.closingDay)))), dueDay:Math.min(31,Math.max(1,Math.round(num(d.dueDay))))};
     if(c) Object.assign(c,o); else { S.cards.push(Object.assign({id:uid()},o)); S.settings.lastCard ||= S.cards[S.cards.length-1].id; } toast('Tarjeta guardada'); },
   c?delBtn(()=>{ S.cards=S.cards.filter(x=>x.id!==c.id); }):'');
+}
+function accForm(a){
+  formSheet(a?'Editar tarjeta de débito':'Nueva tarjeta de débito', [
+    {name:'name', label:'Nombre', value:a?.name||'', ph:'Ej. Débito BCP', req:true},
+    {name:'balance', label:'Saldo actual', type:'number', value:a?accBalance(a):'', req:true, help:a?'Si lo cambias, el saldo se ajusta a este monto desde hoy.':'Lo que tienes hoy en la cuenta.'},
+    {name:'lowAlert', label:'Avisarme si el saldo baja de', type:'number', value:a?.lowAlert||'', ph:'0 = sin aviso'}
+  ], d=>{ const bal=r2(num(d.balance)), o={name:d.name.trim(), lowAlert:r2(num(d.lowAlert))};
+    if(a){ a.initial = r2((a.initial||0) + bal - accBalance(a)); Object.assign(a,o); checkLow(a); }
+    else { const n=Object.assign({id:uid(), initial:bal, since:nowLocal()},o); S.accounts.push(n); S.settings.lastAccount ||= n.id; checkLow(n); }
+    toast('Tarjeta de débito guardada','', 'check'); },
+  a?delBtn(()=>{ S.accounts=S.accounts.filter(x=>x.id!==a.id); S.moves=S.moves.filter(m=>m.accountId!==a.id); S.expenses.forEach(e=>{ if(e.accountId===a.id) e.accountId=null; }); if(S.settings.lastAccount===a.id) S.settings.lastAccount=null; }):'');
+}
+function incomeForm(accountId, m){
+  formSheet(m?'Editar ingreso':'Registrar ingreso', [
+    {name:'amount', label:'Monto', type:'number', value:m?.amount||'', req:true},
+    {name:'note', label:'Concepto', value:m?.note||'', ph:'Ej. Sueldo, transferencia, devolución'},
+    ...(S.accounts.length>1?[{name:'accountId', label:'Tarjeta de débito', type:'select', value:m?.accountId||accountId, options:S.accounts.map(a=>[a.id,a.name])}]:[]),
+    {name:'date', label:'Fecha', type:'date', value:m?.date||nowLocal().slice(0,10)}
+  ], d=>{ const a=r2(num(d.amount)); if(a<=0){toast('Monto inválido','warn');return false;}
+    const o={amount:a, note:(d.note||'').trim(), accountId:d.accountId||m?.accountId||accountId, date:d.date||nowLocal().slice(0,10)};
+    if(m) Object.assign(m,o); else S.moves.push(Object.assign({id:uid(), kind:'ingreso'},o));
+    checkLow(acc(o.accountId)); toast(m?'Ingreso actualizado':'Ingreso registrado: +'+fmt(a),'', 'check'); },
+  m?delBtn(()=>{ S.moves=S.moves.filter(x=>x.id!==m.id); }):'');
 }
 function planForm(p){
   formSheet(p?'Editar':'Nuevo préstamo o cuotas', [
